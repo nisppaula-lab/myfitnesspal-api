@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: myfitnesspal-api
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: MFP_USERNAME
+        sync: false
+      - key: MFP_PASSWORD
+        sync: false
+      - key: API_TOKEN
+        sync: false
+      - key: MFP_TRANSPORT
+        value: streamable-http
+      - key: MFP_SYNC_DAYS
+        value: '30'

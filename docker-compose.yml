@@ -1,0 +1,24 @@
+services:
+  myfitnesspal-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      MFP_USERNAME: ${MFP_USERNAME:-}
+      MFP_PASSWORD: ${MFP_PASSWORD:-}
+      API_TOKEN: ${API_TOKEN:-}
+      MFP_TRANSPORT: ${MFP_TRANSPORT:-streamable-http}
+      MFP_SYNC_DAYS: ${MFP_SYNC_DAYS:-30}
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      - mfp_data:/home/mcp/.mfp_mcp
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+
+volumes:
+  mfp_data:
