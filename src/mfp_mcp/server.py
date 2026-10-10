@@ -387,6 +387,32 @@ def _rss_mb() -> float:
 _client = None
 _client_lock = asyncio.Lock()
 
+
+def _find_camoufox_binary() -> Optional[str]:
+    """Locate the Camoufox binary fetched at image build time.
+
+    Pure filesystem search: never calls pkgman, whose path resolution can
+    decide the install is stale and start a GitHub download at runtime.
+    """
+    cache_home = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+    base = cache_home / "camoufox"
+    if not base.exists():
+        return None
+    for candidate in sorted(base.rglob("camoufox-bin")):
+        if candidate.is_file():
+            # pkgman's path resolution deletes the install and re-downloads
+            # it when its compat flag is missing. The binary is already
+            # here from the image build, so restore the flag instead of
+            # letting a login trigger a ~500MB runtime download.
+            flag = base / ".0.5_FLAG"
+            try:
+                if not flag.exists():
+                    flag.touch()
+            except Exception:
+                pass
+            return str(candidate)
+    return None
+
 def ensure_config_dir():
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
@@ -485,14 +511,15 @@ async def authenticate_with_camoufox_async(username: Optional[str] = None, passw
     }
     # Bypass Camoufox's GitHub release lookup: the browser is fetched at
     # image build time, and the runtime check hits api.github.com, which
-    # rate-limits shared hosting IPs (403). Supplying the local binary
-    # path skips that lookup entirely.
-    try:
-        from camoufox.pkgman import launch_path
-
-        camoufox_args["executable_path"] = launch_path()
-    except Exception as e:
-        logger.warning(f"Could not resolve local Camoufox binary: {e}")
+    # rate-limits shared hosting IPs (403) and can trigger a re-download
+    # that fills the disk. Resolve the local binary by filesystem search
+    # only — pkgman's launch_path() itself can trigger that download.
+    binary = _find_camoufox_binary()
+    if binary:
+        camoufox_args["executable_path"] = binary
+        logger.info(f"Camoufox binary (local): {binary}")
+    else:
+        logger.warning("Local Camoufox binary not found under ~/.cache/camoufox")
 
     logger.info(
         "Camoufox launch: headed=%s rss=%.0fMB", _HEADED, _rss_mb()
