@@ -33,18 +33,22 @@ COPY pyproject.toml README.md API.md DEPLOY.md UPSTREAM_LICENSE.txt UPSTREAM_LIC
 COPY src/ ./src/
 
 RUN pip install --no-cache-dir -e . && \
-    python -m camoufox fetch && \
     python -m playwright install-deps firefox && \
     rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --shell /bin/bash mcp && \
-        mkdir -p /home/mcp/.mfp_mcp/browser_profile /opt/playwright && \
+    mkdir -p /home/mcp/.mfp_mcp/browser_profile /opt/playwright && \
     chown -R mcp:mcp /home/mcp /app /opt/playwright
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 USER mcp
+
+# Fetch the browser as the runtime user so it lands in /home/mcp's cache,
+# where the server actually looks for it. Fetching as root would hide it
+# in /root/.cache and force a runtime download at first login.
+RUN python -m camoufox fetch
 
 EXPOSE 8000
 
