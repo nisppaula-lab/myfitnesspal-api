@@ -38,7 +38,7 @@ RUN pip install --no-cache-dir -e . && \
     rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --shell /bin/bash mcp && \
-    mkdir -p /home/mcp/.mfp_mcp/browser_profile && \
+        mkdir -p /home/mcp/.mfp_mcp/browser_profile /opt/playwright && \
     chown -R mcp:mcp /home/mcp /app /opt/playwright
 
 COPY entrypoint.sh /entrypoint.sh
