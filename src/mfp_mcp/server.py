@@ -483,6 +483,17 @@ async def authenticate_with_camoufox_async(username: Optional[str] = None, passw
         "humanize": True,
         "window": (_WIDTH, _HEIGHT),
     }
+    # Bypass Camoufox's GitHub release lookup: the browser is fetched at
+    # image build time, and the runtime check hits api.github.com, which
+    # rate-limits shared hosting IPs (403). Supplying the local binary
+    # path skips that lookup entirely.
+    try:
+        from camoufox.pkgman import launch_path
+
+        camoufox_args["executable_path"] = launch_path()
+    except Exception as e:
+        logger.warning(f"Could not resolve local Camoufox binary: {e}")
+
     logger.info(
         "Camoufox launch: headed=%s rss=%.0fMB", _HEADED, _rss_mb()
     )
