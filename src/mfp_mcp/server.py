@@ -367,6 +367,26 @@ def _refresh_cache_for_date(client, target_date: date) -> None:
 _DISPLAY = os.environ.get("DISPLAY", "")
 _USE_HEADED = bool(_DISPLAY)
 
+# Headed browser mode (needed only for manual/VNC login) must be requested
+# explicitly with MFP_HEADED=1. Default is headless: a headed Firefox under
+# Xvfb uses noticeably more RAM, which matters on small instances.
+_HEADED = _USE_HEADED and os.environ.get("MFP_HEADED", "0") == "1"
+
+
+def _rss_mb() -> float:
+    try:
+        import resource
+
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+    except Exception:
+        return -1.0
+
+
+# Cached authenticated client + lock so concurrent requests share ONE
+# browser authentication instead of each launching its own Camoufox.
+_client = None
+_client_lock = asyncio.Lock()
+
 def ensure_config_dir():
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
@@ -457,12 +477,15 @@ async def authenticate_with_camoufox_async(username: Optional[str] = None, passw
 
     # Camoufox settings for maximum stealth
     camoufox_args = {
-        "headless": not _USE_HEADED,
+        "headless": not _HEADED,
         "persistent_context": True,
         "user_data_dir": str(BROWSER_PROFILE_DIR),
         "humanize": True,
         "window": (_WIDTH, _HEIGHT),
     }
+    logger.info(
+        "Camoufox launch: headed=%s rss=%.0fMB", _HEADED, _rss_mb()
+    )
 
     async with AsyncCamoufox(**camoufox_args) as browser:
         # We don't use 'context' here because Camoufox manages the persistent context internally
@@ -486,7 +509,7 @@ async def authenticate_with_camoufox_async(username: Optional[str] = None, passw
             if not username or not password:
                 logger.warning("No valid session and no credentials provided. Please log in via VNC.")
                 # If in headed mode, we can wait for manual login
-                if _USE_HEADED:
+                if _HEADED:
                     logger.info("WAITING FOR MANUAL LOGIN VIA VNC (300s timeout)...")
                     await page.goto("https://www.myfitnesspal.com/account/login")
                     try:
@@ -516,7 +539,7 @@ async def authenticate_with_camoufox_async(username: Optional[str] = None, passw
                 await page.wait_for_url(lambda u: "login" not in u.lower(), timeout=60000)
             except Exception:
                 # Might be stuck on a captcha
-                if _USE_HEADED:
+                if _HEADED:
                     logger.info("Stuck on login page? Check VNC for Captcha. Waiting 60s...")
                     await asyncio.sleep(60)
                 else:
@@ -535,41 +558,71 @@ async def authenticate_with_camoufox_async(username: Optional[str] = None, passw
             logger.error(f"Camoufox error: {e}")
             raise
 
-async def get_mfp_client_async():
-    """Async version of get_mfp_client — uses Camoufox for auth."""
+def _client_from_cookies(cookies):
     import myfitnesspal
-    last_error = None
-    username = os.environ.get("MFP_USERNAME")
-    password = os.environ.get("MFP_PASSWORD")
 
-    logger.info("Attempting authentication via Camoufox Persistent Context")
-    try:
-        cookies = await authenticate_with_camoufox_async(username, password)
-        save_cookies(cookies)
-        cookiejar = dict_to_cookiejar(cookies)
-        client = myfitnesspal.Client(cookiejar=cookiejar)
-        # Test client
-        _ = client.get_date(date.today())
-        logger.info("Successfully authenticated with Camoufox session")
-        return client
-    except Exception as e:
-        last_error = e
-        logger.warning(f"Camoufox authentication failed: {e}")
+    cookiejar = dict_to_cookiejar(cookies)
+    client = myfitnesspal.Client(cookiejar=cookiejar)
+    # Test client
+    _ = client.get_date(date.today())
+    return client
 
-    # Fallback to stored cookies
-    stored_cookies = load_cookies()
-    if stored_cookies:
-        logger.info("Attempting fallback to stored cookies.json")
+
+async def get_mfp_client_async():
+    """Return a cached authenticated client.
+
+    Order matters for small instances:
+    1. Reuse the in-process client (no browser, no HTTP auth test).
+    2. Try stored cookies (cheap HTTP only).
+    3. Only then launch Camoufox to log in, and cache the result.
+
+    A lock serializes authentication so concurrent requests cannot each
+    launch their own browser at the same time.
+    """
+    global _client
+    if _client is not None:
+        return _client
+    async with _client_lock:
+        if _client is not None:
+            return _client
+
+        last_error = None
+
+        # 1. Stored cookies first — no browser launch needed.
+        stored_cookies = load_cookies()
+        if stored_cookies:
+            logger.info("Attempting auth from stored cookies.json (no browser)")
+            try:
+                _client = _client_from_cookies(stored_cookies)
+                logger.info("Authenticated from stored cookies")
+                return _client
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Stored cookie auth failed: {e}")
+
+        # 2. Browser login as the last resort.
+        username = os.environ.get("MFP_USERNAME")
+        password = os.environ.get("MFP_PASSWORD")
+        logger.info(
+            "Attempting authentication via Camoufox Persistent Context (rss=%.0fMB)",
+            _rss_mb(),
+        )
         try:
-            cookiejar = dict_to_cookiejar(stored_cookies)
-            client = myfitnesspal.Client(cookiejar=cookiejar)
-            _ = client.get_date(date.today())
-            return client
+            cookies = await authenticate_with_camoufox_async(username, password)
+            save_cookies(cookies)
+            _client = _client_from_cookies(cookies)
+            logger.info(
+                "Successfully authenticated with Camoufox session (rss=%.0fMB)",
+                _rss_mb(),
+            )
+            return _client
         except Exception as e:
             last_error = e
-            logger.warning(f"Stored cookie fallback failed: {e}")
+            logger.warning(f"Camoufox authentication failed: {e}")
 
-    raise RuntimeError(f"All authentication methods failed. Last error: {str(last_error)}")
+        raise RuntimeError(
+            f"All authentication methods failed. Last error: {str(last_error)}"
+        )
 
 
 def get_mfp_client():
